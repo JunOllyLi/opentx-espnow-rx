@@ -27,21 +27,19 @@
 #elif defined(ESP32)
 #include <WiFi.h>
 #include <esp_wifi.h>
-#define LED_BUILTIN 2
+#define LED_BUILTIN 13 
 #endif
 #include <esp_now.h>
 #include "esprx.h"
 #include "uCRC16Lib.h"
 #include <Ticker.h>
 
-#if defined(ESP8266)
-#define ADD_PEER(mac, chan, mode) WifiEspNow.addPeer(mac, chan)
-#elif defined(ESP32)
-#define ADD_PEER(mac, chan, mode)  WifiEspNow.addPeer(mac, chan, NULL, (int)mode)
-#endif
-
-
-static struct WifiEspNowPeerInfo txPeer = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},1};
+static esp_now_peer_info_t txPeer = {.peer_addr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, .channel = 2};
+static esp_now_peer_info_t broadcastPeer = {
+  .peer_addr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+  .channel = BIND_CH,
+  .ifidx = (wifi_interface_t)ESP_IF_WIFI_STA
+};
 static RXPacket_t packet;
 static volatile bool dirty = false;
 static volatile bool bindEnabled = true;
@@ -53,7 +51,7 @@ uint32_t volatile recvTime = 0;
 Ticker blinker;
 
 char *mac2str(const uint8_t mac[6]) {
-  static char buff[18];
+  static char buff[20];
   sprintf(buff, "%02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   return buff;
 }
@@ -84,7 +82,7 @@ static inline void process_data(const uint8_t mac[6], TXPacket_t *rp){
     portEXIT_CRITICAL(&timerMux);
 #endif
     packRecv++;
-    WifiEspNow.send(txPeer.mac, (const uint8_t *) &packet, sizeof(packet)); //Send ACK
+    esp_now_send(txPeer.peer_addr, (const uint8_t *) &packet, sizeof(packet)); //Send ACK
 //    if (FSAFE == rp->type) {
 //      dirty = true;
 //    }
@@ -106,16 +104,21 @@ static inline void process_bind(const uint8_t mac[6], TXPacket_t *rp) {
     rp->crc = uCRC16Lib::calculate((char *) rp, sizeof(TXPacket_t));
     if(crc == rp->crc){
       Serial.printf("Got bind MAC: %s", mac2str(mac));
-      memcpy(txPeer.mac, mac, sizeof(txPeer.mac));
+      memcpy(txPeer.peer_addr, mac, sizeof(txPeer.peer_addr));
       memcpy( (void*) fsChannelOutputs, rp->ch, sizeof(locChannelOutputs) );
       txPeer.channel = rp->idx;
-      if (!ADD_PEER(txPeer.mac, txPeer.channel, ESP_IF_WIFI_STA)) {
-        Serial.printf("ADD_PEER() failed MAC: %s", mac2str(txPeer.mac));
+      txPeer.ifidx = (wifi_interface_t)ESP_IF_WIFI_STA;
+      txPeer.encrypt = false;
+      if (esp_now_is_peer_exist(txPeer.peer_addr) == false) {
+        esp_now_add_peer(&txPeer);
+      } else {
+        esp_now_mod_peer(&txPeer);
       }
       packet.type = BIND;
       packet.crc=0;
       packet.crc = uCRC16Lib::calculate((char *) &packet, sizeof(packet));
-      WifiEspNow.send(txPeer.mac, (const uint8_t *) &packet, sizeof(packet));
+      //esp_wifi_set_channel(BIND_CH, (wifi_second_chan_t)WIFI_SECOND_CHAN_NONE);
+      esp_now_send(broadcastPeer.peer_addr, (const uint8_t *) &packet, sizeof(packet));
       dirty = true;
       bindEnabled = false;
     }
@@ -128,18 +131,18 @@ static inline void process_bind(const uint8_t mac[6], TXPacket_t *rp) {
   }
 }
 
-void recv_cb(const uint8_t mac[6], const uint8_t* buf, size_t count, void* cbarg) {
+static void recv_cb(const uint8_t *mac, const uint8_t *buf, int count) {
   if (sizeof(TXPacket_t) == count) {
     TXPacket_t *rp = (TXPacket_t *) buf;
     if (bindEnabled && BIND == rp->type) {
       process_bind(mac, rp);
     } 
     else if (DATA == rp->type || FSAFE == rp->type) {
-      if (!memcmp(mac, txPeer.mac, sizeof(txPeer.mac))) {
+      if (!memcmp(mac, txPeer.peer_addr, sizeof(txPeer.peer_addr))) {
         process_data(mac, rp);
       }
       else {
-        Serial.printf("Wrong MAC: %s, %s\n", String(mac2str(mac)).c_str(),   String(mac2str(txPeer.mac)).c_str() );
+        Serial.printf("Wrong MAC: %s, %s\n", String(mac2str(mac)).c_str(),   String(mac2str(txPeer.peer_addr)).c_str() );
       }
     }
   }
@@ -200,7 +203,7 @@ void initRX(){
 
   startTime = millis();
   pinMode(GPIO_LED_PIN, OUTPUT);
-  
+
   EEPROM.begin(sizeof(txPeer)+sizeof(fsChannelOutputs));
   EEPROM.get(0,txPeer);
   EEPROM.get(sizeof(txPeer), fsChannelOutputs);
@@ -212,22 +215,19 @@ void initRX(){
 #elif defined(ESP32)
   digitalWrite(GPIO_LED_PIN,1);
   WiFi.mode(WIFI_STA);
-  esp_wifi_set_channel(BIND_CH, (wifi_second_chan_t) 0);
+  esp_wifi_set_channel(BIND_CH, (wifi_second_chan_t) WIFI_SECOND_CHAN_NONE);
 #endif
 
-  if (!WifiEspNow.begin()) {
-    Serial.println("WifiEspNow.begin() failed");
-    return;
+  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_now_init());
+  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_now_register_recv_cb(recv_cb));
+
+  if (ESP_OK != esp_now_add_peer(&broadcastPeer)) {
+    Serial.printf("ADD_PEER() failed broadcase peer\n");
   }
 
-  WifiEspNow.onReceive(recv_cb, nullptr);
-
-  if (!ADD_PEER(txPeer.mac, txPeer.channel, ESP_IF_WIFI_STA)) {
-    Serial.printf("ADD_PEER() failed MAC: %s", mac2str(txPeer.mac));
-
-  }
-  if (!ADD_PEER(broadcast_mac, BIND_CH, ESP_IF_WIFI_STA)) {
-    Serial.printf("ADD_PEER() failed: MAC: %s", mac2str(broadcast_mac));
-
+  txPeer.ifidx = (wifi_interface_t)ESP_IF_WIFI_STA;
+  txPeer.encrypt = false;
+  if (ESP_OK != esp_now_add_peer(&txPeer)) {
+    Serial.printf("ADD_PEER() failed MAC: %s", mac2str(txPeer.peer_addr));
   }
 }
