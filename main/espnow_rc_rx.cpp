@@ -14,16 +14,17 @@
  * You should have received a copy of the GNU General Public License 
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+#include "sdkconfig.h"
 #include "Arduino.h"
 #include "esprx.h"
-
+#include "esp_log.h"
 
 int16_t get_ch(uint16_t idx);
 extern uint32_t volatile recvTime;
 
+#define TAG "ESPNOW_RX"
+
 void setup() {
-  Serial.begin(115200);
-  Serial.println();
   initRX();
 }
 
@@ -38,7 +39,6 @@ void loop()
     sprintf(p,"%2d:%4d, ", i, get_ch(i));
     p = buff + strlen(buff);
   }
-  Serial.println( "Data age (ms): " + String(millis()- recvTime)+ " received: " + String(packRecv));
-  Serial.println(buff);
-  
+  ESP_LOGI(TAG, "Data age (ms): %lu received: %u", millis()- recvTime, packRecv);
+  ESP_LOGI(TAG, "%s", buff);
 }

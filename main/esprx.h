@@ -23,4 +23,6 @@ void checkEEPROM();
 void disablePPM();
 void enablePPM();
 
+void rx_led_setup();
+void rx_led_toggle(bool data_fresh);
 #endif

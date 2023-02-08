@@ -27,13 +27,14 @@
 #elif defined(ESP32)
 #include <WiFi.h>
 #include <esp_wifi.h>
-#define LED_BUILTIN 13 
 #endif
 #include <esp_now.h>
 #include "esprx.h"
 #include "uCRC16Lib.h"
 #include <Ticker.h>
+#include "esp_log.h"
 
+#define TAG "RX"
 static esp_now_peer_info_t txPeer = {.peer_addr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, .channel = 2};
 static esp_now_peer_info_t broadcastPeer = {
   .peer_addr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
@@ -67,7 +68,7 @@ static bool packet_check(TXPacket_t * rxp)
     packet.type = ACK;
     return true;
   }
-  Serial.printf("CRC16 error: %d vs %d\n", packet.crc, crc);
+  ESP_LOGI(TAG, "CRC16 error: %d vs %d\n", packet.crc, crc);
   return false;
 }
 
@@ -92,7 +93,7 @@ static inline void process_data(const uint8_t mac[6], TXPacket_t *rp){
     }
   }
   else {
-    Serial.printf("Packet error from MAC: %s\n", mac2str(mac));
+    ESP_LOGI(TAG, "Packet error from MAC: %s\n", mac2str(mac));
   }
 
 }
@@ -103,7 +104,7 @@ static inline void process_bind(const uint8_t mac[6], TXPacket_t *rp) {
     rp->crc = 0;
     rp->crc = uCRC16Lib::calculate((char *) rp, sizeof(TXPacket_t));
     if(crc == rp->crc){
-      Serial.printf("Got bind MAC: %s", mac2str(mac));
+      ESP_LOGI(TAG, "Got bind MAC: %s", mac2str(mac));
       memcpy(txPeer.peer_addr, mac, sizeof(txPeer.peer_addr));
       memcpy( (void*) fsChannelOutputs, rp->ch, sizeof(locChannelOutputs) );
       txPeer.channel = rp->idx;
@@ -123,11 +124,11 @@ static inline void process_bind(const uint8_t mac[6], TXPacket_t *rp) {
       bindEnabled = false;
     }
     else {
-      Serial.printf("Bind packet CRC error: %d vs %d", crc, rp->crc);
+      ESP_LOGI(TAG, "Bind packet CRC error: %d vs %d", crc, rp->crc);
     }
   }
   else {
-    Serial.printf("Incorrect packet type: %d", rp->type);
+    ESP_LOGI(TAG, "Incorrect packet type: %d", rp->type);
   }
 }
 
@@ -142,30 +143,30 @@ static void recv_cb(const uint8_t *mac, const uint8_t *buf, int count) {
         process_data(mac, rp);
       }
       else {
-        Serial.printf("Wrong MAC: %s, %s\n", String(mac2str(mac)).c_str(),   String(mac2str(txPeer.peer_addr)).c_str() );
+        ESP_LOGI(TAG, "Wrong MAC: %s, %s\n", String(mac2str(mac)).c_str(),   String(mac2str(txPeer.peer_addr)).c_str() );
       }
     }
   }
   else {
-    Serial.printf("Wrong packet size: %d (must be %d)\n",  count, sizeof(TXPacket_t));
+    ESP_LOGI(TAG, "Wrong packet size: %d (must be %d)\n",  count, sizeof(TXPacket_t));
   }
 }
 
 void blink() {
-  static bool fast = true;
-  int state = digitalRead( GPIO_LED_PIN);
-  digitalWrite( GPIO_LED_PIN, !state);
+  static bool fresh = true;
   uint32_t dataAge = millis()-recvTime;
+  rx_led_toggle(fresh);
+
   if (dataAge > 100){
-    if (fast) {
+    if (fresh) {
       blinker.attach(1, blink);
-      fast = false;
+      fresh = false;
     }
   }
   else {
-    if (!fast) {
-      blinker.attach(0.1, blink);
-      fast = true;
+    if (!fresh) {
+      blinker.attach(2, blink);
+      fresh = true;
     }
   }
   if (dataAge > FS_TIMEOUT) {
@@ -202,18 +203,16 @@ void checkEEPROM() {
 void initRX(){
 
   startTime = millis();
-  pinMode(GPIO_LED_PIN, OUTPUT);
+  rx_led_setup();
 
   EEPROM.begin(sizeof(txPeer)+sizeof(fsChannelOutputs));
   EEPROM.get(0,txPeer);
   EEPROM.get(sizeof(txPeer), fsChannelOutputs);
 
 #if defined(ESP8266)
-  digitalWrite(GPIO_LED_PIN,0);
   WiFi.mode(WIFI_STA);
   wifi_set_channel(BIND_CH);  
 #elif defined(ESP32)
-  digitalWrite(GPIO_LED_PIN,1);
   WiFi.mode(WIFI_STA);
   esp_wifi_set_channel(BIND_CH, (wifi_second_chan_t) WIFI_SECOND_CHAN_NONE);
 #endif
@@ -222,12 +221,12 @@ void initRX(){
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_now_register_recv_cb(recv_cb));
 
   if (ESP_OK != esp_now_add_peer(&broadcastPeer)) {
-    Serial.printf("ADD_PEER() failed broadcase peer\n");
+    ESP_LOGI(TAG, "ADD_PEER() failed broadcase peer\n");
   }
 
   txPeer.ifidx = (wifi_interface_t)ESP_IF_WIFI_STA;
   txPeer.encrypt = false;
   if (ESP_OK != esp_now_add_peer(&txPeer)) {
-    Serial.printf("ADD_PEER() failed MAC: %s", mac2str(txPeer.peer_addr));
+    ESP_LOGI(TAG, "ADD_PEER() failed MAC: %s", mac2str(txPeer.peer_addr));
   }
 }

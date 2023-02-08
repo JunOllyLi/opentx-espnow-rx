@@ -11,6 +11,7 @@
 
 set(LOCAL_LIB_SDIRS
 	"uCRC16Lib/src"
+	"Adafruit_NeoPixel"
 )
 
 idf_component_register(
