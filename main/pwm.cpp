@@ -28,52 +28,48 @@ static hw_timer_t *timer = NULL;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
-enum PPMState_t {
-  PPM_UNINIT,
-  PPM_DISABLED,
-  PPM_ENABLED,
+static int channel_pins[] = {
+    35, 36, 9, 7, 8, 37
 };
 
-static volatile uint32_t pulses[20];
-static volatile uint32_t *ptr;
-static volatile int outLevel;
-static unsigned int mask = 1;
+#define USED_OUTPUT_CHANNELS (sizeof(channel_pins)/sizeof(channel_pins[0]))
+
+enum PWMState_t {
+  PWM_UNINIT,
+  PWM_DISABLED,
+  PWM_ENABLED,
+};
+
+static volatile uint32_t pulses[USED_OUTPUT_CHANNELS + 1];
+static uint16_t current_channel = 0U;
+
 static int frameLength = 22; //22 ms 
-static volatile PPMState_t ppmState = PPM_UNINIT;
+static volatile PWMState_t pwmState = PWM_UNINIT;
 
-
-IRAM_ATTR void setupPulsesPPM(int channelsStart)
+IRAM_ATTR void setupPulsesPWM(int channelsStart)
 {
-  static uint32_t pw = 300 * US_TICKS;
-  static uint32_t PPM_min = 1000 * US_TICKS;
-  static uint32_t PPM_max = 2000 * US_TICKS;  
-  static uint32_t PPM_offs = 1500 * US_TICKS;
-  static uint32_t minRest = 4500 * US_TICKS;
+  static uint32_t PWM_min = 1000 * US_TICKS;
+  static uint32_t PWM_max = 2000 * US_TICKS;  
+  static uint32_t PWM_offs = 1500 * US_TICKS;
 
   unsigned int firstCh = channelsStart;
   unsigned int lastCh = firstCh + 8;
-  lastCh = lastCh > MAX_OUTPUT_CHANNELS ? MAX_OUTPUT_CHANNELS : lastCh;
+  lastCh = lastCh > USED_OUTPUT_CHANNELS ? USED_OUTPUT_CHANNELS : lastCh;
 
-  ptr = pulses;
+  volatile uint32_t *ptr = pulses;
   uint32_t rest = frameLength * 1000 * US_TICKS;
   for (int i=firstCh; i<lastCh; i++) {
-    uint32_t v = (locChannelOutputs[i] * US_TICKS)/2 + PPM_offs;
-    v = v < PPM_min ? PPM_min : v;
-    v = v > PPM_max ? PPM_max : v;
+    uint32_t v = (locChannelOutputs[i] * US_TICKS)/2 + PWM_offs;
+    v = v < PWM_min ? PWM_min : v;
+    v = v > PWM_max ? PWM_max : v;
     rest -= v;
-    *ptr++ = pw;
-    *ptr++ = v-pw;
+    *ptr++ = v;
   }
-  *ptr++ = pw;
-  if (rest < minRest) rest = minRest;
-  *ptr++ = rest;
-  *ptr = 0;
-  ptr = pulses;
-  outLevel = POLARITY;
+  *ptr = rest;
 }
 
 
-IRAM_ATTR void timer_callback()
+static IRAM_ATTR void timer_callback()
 {
   static bool intEn = true;
 #if defined(ESP8266)
@@ -81,21 +77,36 @@ IRAM_ATTR void timer_callback()
 #elif defined(ESP32)
   portENTER_CRITICAL_ISR(&timerMux);
 #endif
-  digitalWrite(GPIO_PPM_PIN, outLevel);
-  outLevel++;
-  outLevel = outLevel & mask;
-  if ( 0 == *ptr) {
-    if (PPM_ENABLED == ppmState){
-      setupPulsesPPM(0);
+  if (PWM_ENABLED == pwmState){
+    if (0U == current_channel) {
+      setupPulsesPWM(0);
+    } else {
+       // stop previous channel
+       digitalWrite(channel_pins[current_channel - 1], !POLARITY);
     }
-    intEn = PPM_ENABLED == ppmState;
+    if (current_channel < USED_OUTPUT_CHANNELS) {
+      // start next channel
+      digitalWrite(channel_pins[current_channel], POLARITY);
+    }
+  } else {
+    for (int i = 0; i < USED_OUTPUT_CHANNELS; i++) {
+      digitalWrite(channel_pins[i], !POLARITY);  // stop all channels
+    }
   }
+  intEn = PWM_ENABLED == pwmState;
+
+  uint32_t pulse = pulses[current_channel];
+  current_channel++;
+  if (current_channel == USED_OUTPUT_CHANNELS + 1) { // last channel is the rest period
+    current_channel = 0;
+  }
+
 #if defined(ESP8266)
-  timer1_write(*ptr++);
+  timer1_write(pulse);
   interrupts();
 #elif defined(ESP32)
   if (intEn) {
-    timerAlarmWrite(timer, *ptr++, true);
+    timerAlarmWrite(timer, pulse, true);
   } 
   else {
     timerStop(timer);
@@ -105,7 +116,11 @@ IRAM_ATTR void timer_callback()
 }
 
 void initOUTPUT() {
-  pinMode(GPIO_PPM_PIN, OUTPUT);
+  for (int i = 0; i < USED_OUTPUT_CHANNELS; i++) {
+    pinMode(channel_pins[i], OUTPUT);
+    digitalWrite(channel_pins[i], !POLARITY);
+  }
+  
 #if defined(ESP8266)
   timer1_isr_init();
   timer1_attachInterrupt(timer_callback);
@@ -114,8 +129,8 @@ void initOUTPUT() {
   timer = timerBegin(0, 16, true); // 5 MHz
   timerAttachInterrupt(timer, timer_callback, true);
 #endif
-  ppmState = PPM_ENABLED;
-  setupPulsesPPM(0);
+  pwmState = PWM_ENABLED;
+
   timer_callback();
 #if defined(ESP32)  
   timerAlarmEnable(timer);
@@ -123,15 +138,15 @@ void initOUTPUT() {
 }
 
 void disableOUTPUT(){
-  if (PPM_ENABLED == ppmState) {
-    ppmState = PPM_DISABLED;
+  if (PWM_ENABLED == pwmState) {
+    pwmState = PWM_DISABLED;
     delay(2*frameLength);
   }
 }
 
 void enableOUTPUT(){
-  if (PPM_DISABLED == ppmState) {
-    ppmState = PPM_ENABLED;
+  if (PWM_DISABLED == pwmState) {
+    pwmState = PWM_ENABLED;
 #if defined(ESP32)  
     timerRestart(timer);
 #endif  

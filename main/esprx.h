@@ -3,7 +3,6 @@
 #include "esprc_packet.h"
 
 #define GPIO_PPM_PIN 5
-#define GPIO_LED_PIN LED_BUILTIN
 #define BIND_TIMEOUT 1000
 #define FS_TIMEOUT 1000
 
@@ -18,10 +17,14 @@ extern portMUX_TYPE timerMux;
 #endif
 
 void initRX();
-void initPPM();
 void checkEEPROM();
-void disablePPM();
-void enablePPM();
+
+extern int16_t locChannelOutputs[];
+extern int16_t fsChannelOutputs[];
+
+void initOUTPUT();
+void disableOUTPUT();
+void enableOUTPUT();
 
 void rx_led_setup();
 void rx_led_toggle(bool data_fresh);

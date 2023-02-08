@@ -35,6 +35,10 @@
 #include "esp_log.h"
 
 #define TAG "RX"
+
+int16_t locChannelOutputs[MAX_OUTPUT_CHANNELS];
+int16_t fsChannelOutputs[MAX_OUTPUT_CHANNELS];
+
 static esp_now_peer_info_t txPeer = {.peer_addr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, .channel = 2};
 static esp_now_peer_info_t broadcastPeer = {
   .peer_addr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
@@ -45,7 +49,7 @@ static RXPacket_t packet;
 static volatile bool dirty = false;
 static volatile bool bindEnabled = true;
 static uint32_t startTime;
-static bool ppmStarted = false;
+static bool outputStarted = false;
 uint32_t volatile packRecv = 0;
 uint32_t volatile packAckn = 0;
 uint32_t volatile recvTime = 0;
@@ -87,9 +91,9 @@ static inline void process_data(const uint8_t mac[6], TXPacket_t *rp){
 //    if (FSAFE == rp->type) {
 //      dirty = true;
 //    }
-    if (!ppmStarted && !bindEnabled) {
-      initPPM();
-      ppmStarted = true;
+    if (!outputStarted && !bindEnabled) {
+      initOUTPUT();
+      outputStarted = true;
     }
   }
   else {
@@ -177,12 +181,12 @@ void blink() {
 void checkEEPROM() {
   static bool blinking = false;
   if (dirty) {
-    disablePPM();
+    disableOUTPUT();
     EEPROM.put(0,txPeer);
     EEPROM.put(sizeof(txPeer), fsChannelOutputs);
     EEPROM.commit();
     dirty = false;
-    enablePPM();
+    enableOUTPUT();
   }
   if (bindEnabled) {
     if(millis()-startTime > BIND_TIMEOUT) {
@@ -229,4 +233,8 @@ void initRX(){
   if (ESP_OK != esp_now_add_peer(&txPeer)) {
     ESP_LOGI(TAG, "ADD_PEER() failed MAC: %s", mac2str(txPeer.peer_addr));
   }
+}
+
+int16_t get_ch(uint16_t idx){
+  return locChannelOutputs[idx];
 }
